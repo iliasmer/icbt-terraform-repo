@@ -1,23 +1,35 @@
+provider "aws" {
+  region = "eu-central-1"
+}
+
+data "aws_caller_identity" "current" {}
+
 terraform {
-  required_version = ">= 1.10.0"
+  required_version = ">= 1.6.0"
 
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
     }
   }
 
-  backend "azurerm" {
-    resource_group_name  = "rg-tfstate"
-    storage_account_name = "tfstateiliaskth"
-    container_name       = "tfstate"
-    key                  = "terraform.tfstate"
+  backend "s3" {
+    bucket  = "ilias-merentitis-kth-thesis-tf-state-bucket"
+    key     = "global/terraform.tfstate"
+    region  = "eu-central-1"
+    encrypt = true
   }
 }
 
-provider "azurerm" {
-  features {}
-  subscription_id = "c25a8b79-d838-4744-9fa9-e011b445cd7d"
-  tenant_id       = "9269d411-b5df-43b0-b58d-e9a4f0044159"
+resource "aws_iam_account_alias" "account_guard" {
+  account_alias = "${local.project_name}-account"
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_caller_identity.current.account_id == local.aws_account_id
+      error_message = "Wrong AWS account. Expected ${local.aws_account_id}."
+    }
+  }
 }
+
