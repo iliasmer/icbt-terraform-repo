@@ -1,5 +1,11 @@
 provider "aws" {
   region = "eu-central-1"
+
+  default_tags {
+    tags = {
+      ManagedBy = "Terraform"
+    }
+  }
 }
 
 data "aws_caller_identity" "current" {}
@@ -10,7 +16,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.0.0"
     }
   }
 

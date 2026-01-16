@@ -1,17 +1,3 @@
-# Terraform working directory
+
 .terraform/
-
-# Terraform state (remote, but local artifacts still appear)
-*.tfstate
-*.tfstate.*
-
-# Terraform plan files
-*.tfplan
-
-# Crash logs
-crash.log
-crash.*.log
-
-# CLI configuration
-.terraformrc
-terraform.rc
+lambda_builds
