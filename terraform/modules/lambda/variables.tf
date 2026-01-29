@@ -45,7 +45,7 @@ variable "runtime" {
 variable "timeout" {
   type        = number
   description = "The amount of time your Lambda Function has to run in seconds"
-  default     = 15
+  default     = 900
 }
 
 variable "architectures" {
