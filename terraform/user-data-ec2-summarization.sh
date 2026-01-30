@@ -39,4 +39,27 @@ docker run -d \
   -p 3000:3000 \
   ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/summarization:latest
 
-echo "=== Bootstrap completed ==="
+echo "=== Summarization model initialized ==="
+
+echo "=== Pulling summarization worker ==="
+docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/summarization-worker:latest
+
+echo "=== Running summarization worker (CloudWatch logs) ==="
+docker rm -f summarization-worker >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name summarization-worker \
+  --network host \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/summarization-worker \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -e AWS_REGION=eu-central-1 \
+  -e QUEUE_URL=https://sqs.eu-central-1.amazonaws.com/${AWS_ACCOUNT_ID}/kth-summarization-jobs \
+  -e INPUT_PREFIX=transcripts/ \
+  -e OUTPUT_PREFIX=summaries/ \
+  -e INFERENCE_URL=http://localhost:3000/summarize \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/summarization-worker:latest
+
+echo "=== Summarization worker initialized ==="

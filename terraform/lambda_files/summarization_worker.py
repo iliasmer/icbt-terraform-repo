@@ -1,0 +1,89 @@
+import json
+import os
+import time
+import urllib.request
+import urllib.parse
+
+import boto3
+
+AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
+QUEUE_URL = os.environ["QUEUE_URL"]
+INPUT_PREFIX = os.getenv("INPUT_PREFIX", "transcripts/")
+OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "summaries/")
+INFERENCE_URL = os.getenv("INFERENCE_URL", "http://summarization:3000/summarize")
+
+sqs = boto3.client("sqs", region_name=AWS_REGION)
+s3 = boto3.client("s3", region_name=AWS_REGION)
+
+
+def output_key_for(input_key: str) -> str:
+    rel = input_key[len(INPUT_PREFIX):] if input_key.startswith(INPUT_PREFIX) else input_key
+    base = rel.rsplit(".", 1)[0]
+    return f"{OUTPUT_PREFIX}{base}_summary.txt"
+
+
+def call_model(text: str) -> str:
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        INFERENCE_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        if resp.status < 200 or resp.status >= 300:
+            raise RuntimeError(f"Model HTTP {resp.status}: {body[:300]}")
+        return body
+
+
+def main():
+    print("summarization-worker started")
+    print(f"QUEUE_URL={QUEUE_URL}")
+    print(f"INFERENCE_URL={INFERENCE_URL}")
+
+    while True:
+        resp = sqs.receive_message(
+            QueueUrl=QUEUE_URL,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=20,
+            VisibilityTimeout=900,
+        )
+        msgs = resp.get("Messages", [])
+        if not msgs:
+            continue
+
+        msg = msgs[0]
+        receipt = msg["ReceiptHandle"]
+
+        try:
+            body = json.loads(msg["Body"])
+            bucket = body["bucket"]
+            key = urllib.parse.unquote_plus(body["key"])
+            print(f"job: s3://{bucket}/{key}")
+
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            text = obj["Body"].read().decode("utf-8", errors="replace")
+
+            summary = call_model(text)
+
+            out_key = output_key_for(key)
+            s3.put_object(
+                Bucket=bucket,
+                Key=out_key,
+                Body=summary.encode("utf-8"),
+                ContentType="text/plain; charset=utf-8",
+            )
+            print(f"wrote: s3://{bucket}/{out_key}")
+
+            sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt)
+            print("deleted message")
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            time.sleep(2)
+            # do not delete message, SQS will retry / DLQ later
+
+
+if __name__ == "__main__":
+    main()

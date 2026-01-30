@@ -39,4 +39,27 @@ docker run -d \
   -p 3000:3000 \
   ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/treatment-recommendation:latest
 
-echo "=== Bootstrap completed ==="
+echo "=== Treatment recommendation model initialized ==="
+
+echo "=== Pulling treatment recommendation worker ==="
+docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/treatment-recommendation-worker:latest
+
+echo "=== Running treatment recommendation worker (CloudWatch logs) ==="
+docker rm -f treatment-recommendation-worker >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name treatment-recommendation-worker \
+  --network host \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/treatment-recommendation-worker \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -e AWS_REGION=eu-central-1 \
+  -e QUEUE_URL=https://sqs.eu-central-1.amazonaws.com/${AWS_ACCOUNT_ID}/kth-treatment-jobs \
+  -e INPUT_PREFIX=summaries/ \
+  -e OUTPUT_PREFIX=treatment_recommendations/ \
+  -e INFERENCE_URL=http://localhost:3000/predict_treatment \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/treatment-recommendation-worker:latest
+
+echo "=== Treatment recommendation worker initialized ==="
