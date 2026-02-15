@@ -40,3 +40,27 @@ resource "aws_sqs_queue_redrive_policy" "treatment_redrive" {
     maxReceiveCount     = 5
   })
 }
+
+
+
+
+
+resource "aws_sqs_queue" "whisper_jobs" {
+  name                       = "kth-whisper-jobs"
+  visibility_timeout_seconds = 900
+  message_retention_seconds  = 1209600
+}
+
+resource "aws_sqs_queue" "whisper_jobs_dlq" {
+  name                      = "kth-whisper-jobs-dlq"
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue_redrive_policy" "whisper_redrive" {
+  queue_url = aws_sqs_queue.whisper_jobs.id
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.whisper_jobs_dlq.arn
+    maxReceiveCount     = 5
+  })
+}

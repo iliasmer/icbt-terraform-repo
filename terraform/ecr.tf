@@ -13,3 +13,11 @@ resource "aws_ecr_repository" "treatment_recommendation_model" {
 resource "aws_ecr_repository" "treatment_recommendation_worker" {
   name = "treatment-recommendation-worker"
 }
+
+resource "aws_ecr_repository" "whisper_model" {
+  name = "whisper"
+}
+
+resource "aws_ecr_repository" "whisper_worker" {
+  name = "whisper-worker"
+}

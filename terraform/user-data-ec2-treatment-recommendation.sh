@@ -55,6 +55,7 @@ docker run -d \
   --log-opt awslogs-group=/ec2/treatment-recommendation-worker \
   --log-opt awslogs-create-group=true \
   --log-opt awslogs-stream=$(hostname) \
+  -e PYTHONUNBUFFERED=1 \
   -e AWS_REGION=eu-central-1 \
   -e QUEUE_URL=https://sqs.eu-central-1.amazonaws.com/${AWS_ACCOUNT_ID}/kth-treatment-jobs \
   -e INPUT_PREFIX=summaries/ \

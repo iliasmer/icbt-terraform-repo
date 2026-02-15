@@ -1,50 +1,43 @@
-data "aws_caller_identity" "current" {}
+resource "aws_security_group" "this" {
+  name        = "${var.name}-sg"
+  description = "ASG inference host security group"
+  vpc_id      = var.vpc_id
 
-resource "aws_instance" "ml_inference_host" {
-  ami                    = var.ami
-  instance_type          = var.instance_type
-  vpc_security_group_ids = [aws_security_group.ml_inference_host_sg.id]
-
-  iam_instance_profile = aws_iam_instance_profile.ml_inference_host_profile.name
-
-  associate_public_ip_address = true
-
-  root_block_device {
-    volume_size = var.volume_size
-    volume_type = "gp3"
-  }
-
-
-  tags = {
-    Name = "${var.name}"
-  }
-
-  user_data = templatefile(
-    "${path.module}/../../user-data-${var.name}.sh",
-    {
-      AWS_ACCOUNT_ID = data.aws_caller_identity.current.account_id
+  dynamic "ingress" {
+    for_each = var.allowed_ingress_cidrs
+    content {
+      description = "Inference ingress"
+      from_port   = var.service_port
+      to_port     = var.service_port
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
     }
-  )
+  }
 
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-resource "aws_iam_role" "ml_inference_host_role" {
+resource "aws_iam_role" "this" {
   name = "${var.name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
+      Principal = { Service = "ec2.amazonaws.com" }
       Action = "sts:AssumeRole"
     }]
   })
 }
 
-resource "aws_iam_role_policy" "ml_inference_host_ecr_policy" {
-  role = aws_iam_role.ml_inference_host_role.id
+resource "aws_iam_role_policy" "this" {
+  role = aws_iam_role.this.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -64,7 +57,8 @@ resource "aws_iam_role_policy" "ml_inference_host_ecr_policy" {
         Action = [
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility"
         ]
         Resource = "*"
       },
@@ -80,7 +74,11 @@ resource "aws_iam_role_policy" "ml_inference_host_ecr_policy" {
       {
         Effect = "Allow"
         Action = [
-          "logs:*"
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+          "logs:DescribeLogGroups"
         ]
         Resource = "*"
       }
@@ -88,41 +86,62 @@ resource "aws_iam_role_policy" "ml_inference_host_ecr_policy" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ml_inference_host_ssm" {
-  role       = aws_iam_role.ml_inference_host_role.name
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.this.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_instance_profile" "ml_inference_host_profile" {
+resource "aws_iam_instance_profile" "this" {
   name = "${var.name}-profile"
-  role = aws_iam_role.ml_inference_host_role.name
+  role = aws_iam_role.this.name
 }
 
-resource "aws_security_group" "ml_inference_host_sg" {
-  name        = "${var.name}-sg"
-  description = "Allow HTTP access to ML inference services"
+resource "aws_launch_template" "this" {
+  name_prefix   = "${var.name}-lt"
+  image_id      = var.ami_id
+  instance_type = var.instance_type
 
-  ingress {
-    description = "BentoML ${var.service_name} service"
-    from_port   = var.service_port
-    to_port     = var.service_port
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  iam_instance_profile {
+    name = aws_iam_instance_profile.this.name
   }
 
-  ingress {
-    description = "SSH access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  vpc_security_group_ids = [aws_security_group.this.id]
+
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_type           = "gp3"
+      volume_size           = var.volume_size
+      delete_on_termination = true
+    }
   }
 
-  egress {
-    description = "Allow all outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_autoscaling_group" "this" {
+  name                      = "${var.name}-asg"
+  min_size                  = var.min_size
+  max_size                  = var.max_size
+  desired_capacity          = var.desired_capacity
+  vpc_zone_identifier       = var.subnet_ids
+  health_check_type         = "EC2"
+  health_check_grace_period = var.health_check_grace_period
+
+  launch_template {
+    id      = aws_launch_template.this.id
+    version = "$Latest"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tag {
+    key                 = "Name"
+    value               = var.name
+    propagate_at_launch = true
   }
 }
