@@ -4,8 +4,13 @@ import time
 import tempfile
 import urllib.parse
 import urllib.request
+import uuid
+import wave
+import struct
+import math
 
 import boto3
+import threading
 
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
 QUEUE_URL = os.environ["QUEUE_URL"]
@@ -73,6 +78,79 @@ def call_model(audio_path: str) -> str:
         return resp_body
 
 
+def warmup_model():
+    print("WARMUP: starting model warmup")
+
+    warmup_path = None
+    warmup_id = uuid.uuid4().hex
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f"warmup_{warmup_id}_",
+            suffix=".wav",
+            delete=False,
+        ) as tmp:
+            warmup_path = tmp.name
+
+        print(f"WARMUP: creating local test file at {warmup_path}")
+
+        sample_rate = 16000
+        duration = 1
+        freq = 440.0
+        amp = 16000
+
+        with wave.open(warmup_path, "w") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            for i in range(sample_rate * duration):
+                v = int(amp * math.sin(2 * math.pi * freq * i / sample_rate))
+                w.writeframes(struct.pack("<h", v))
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                print(f"WARMUP: attempt {attempt}, calling model at {INFERENCE_URL}")
+                _ = call_model(warmup_path)
+                print("WARMUP: success, result discarded")
+                break
+            except Exception as e:
+                print(f"WARMUP: attempt {attempt} failed: {e}")
+                print("WARMUP: waiting 30 seconds before retry")
+                time.sleep(30)
+
+    finally:
+        if warmup_path:
+            try:
+                os.remove(warmup_path)
+                print(f"WARMUP: deleted local test file {warmup_path}")
+            except OSError:
+                print(f"WARMUP: failed to delete local test file {warmup_path}")
+
+    print("WARMUP: finished")
+
+
+def visibility_heartbeat(receipt: str, stop_evt: threading.Event):
+    while not stop_evt.wait(10):
+        try:
+            sqs.change_message_visibility(
+                QueueUrl=QUEUE_URL,
+                ReceiptHandle=receipt,
+                VisibilityTimeout=30,
+            )
+        except Exception as e:
+            print(f"VISIBILITY HEARTBEAT ERROR: {e}")
+
+
+def stop_heartbeat(stop_evt: threading.Event, hb: threading.Thread) -> None:
+    stop_evt.set()
+    try:
+        hb.join(timeout=1)
+    except Exception:
+        pass
+
+
 def main():
     print("whisper-worker started")
     print(f"QUEUE_URL={QUEUE_URL}")
@@ -80,12 +158,14 @@ def main():
     print(f"INPUT_PREFIX={INPUT_PREFIX}")
     print(f"OUTPUT_PREFIX={OUTPUT_PREFIX}")
 
+    warmup_model()
+
     while True:
         resp = sqs.receive_message(
             QueueUrl=QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
-            VisibilityTimeout=900,
+            VisibilityTimeout=30,
         )
         msgs = resp.get("Messages", [])
         if not msgs:
@@ -95,11 +175,18 @@ def main():
         receipt = msg["ReceiptHandle"]
 
         tmp_path = None
+        stop_evt = None
+        hb = None
+
         try:
             body = json.loads(msg["Body"])
             bucket = body["bucket"]
             key = urllib.parse.unquote_plus(body["key"])
             print(f"job: s3://{bucket}/{key}")
+
+            stop_evt = threading.Event()
+            hb = threading.Thread(target=visibility_heartbeat, args=(receipt, stop_evt), daemon=True)
+            hb.start()
 
             with tempfile.NamedTemporaryFile(
                 prefix="whisperx_",
@@ -122,10 +209,15 @@ def main():
             )
             print(f"wrote: s3://{bucket}/{out_txt_key}")
 
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
+
             sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt)
             print("deleted message")
 
         except Exception as e:
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
             print(f"ERROR: {e}")
             time.sleep(2)
             # do not delete message, SQS will retry / DLQ later

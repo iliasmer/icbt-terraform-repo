@@ -64,7 +64,8 @@ resource "aws_iam_role_policy" "ml_inference_host_ecr_policy" {
         Action = [
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility"
         ]
         Resource = "*"
       },

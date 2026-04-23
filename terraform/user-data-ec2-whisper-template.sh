@@ -73,11 +73,11 @@ aws ecr get-login-password --region "$${AWS_REGION}" \
 echo "=== Pulling whisper model ==="
 docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
 
-echo "=== Running whisper container ==="
-docker rm -f whisper >/dev/null 2>&1 || true
+echo "=== Running whisper container 0 ==="
+docker rm -f whisper0 >/dev/null 2>&1 || true
 docker run -d \
   --restart always \
-  --name whisper \
+  --name whisper0 \
   $${GPU_ARGS} \
   --log-driver=awslogs \
   --log-opt awslogs-region=eu-central-1 \
@@ -85,6 +85,66 @@ docker run -d \
   --log-opt awslogs-create-group=true \
   --log-opt awslogs-stream=$(hostname) \
   -p 3000:3000 \
+  -e PYTHONUNBUFFERED=1 \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
+
+echo "=== Running whisper container 1 ==="
+docker rm -f whisper1 >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name whisper1 \
+  $${GPU_ARGS} \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/whisper \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -p 3001:3000 \
+  -e PYTHONUNBUFFERED=1 \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
+
+echo "=== Running whisper container 2 ==="
+docker rm -f whisper2 >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name whisper2 \
+  $${GPU_ARGS} \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/whisper \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -p 3002:3000 \
+  -e PYTHONUNBUFFERED=1 \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
+
+echo "=== Running whisper container 3 ==="
+docker rm -f whisper3 >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name whisper3 \
+  $${GPU_ARGS} \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/whisper \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -p 3003:3000 \
+  -e PYTHONUNBUFFERED=1 \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
+
+echo "=== Running whisper container 4 ==="
+docker rm -f whisper4 >/dev/null 2>&1 || true
+docker run -d \
+  --restart always \
+  --name whisper4 \
+  $${GPU_ARGS} \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=eu-central-1 \
+  --log-opt awslogs-group=/ec2/whisper \
+  --log-opt awslogs-create-group=true \
+  --log-opt awslogs-stream=$(hostname) \
+  -p 3004:3000 \
   -e PYTHONUNBUFFERED=1 \
   ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper:latest
 
@@ -109,7 +169,7 @@ docker run -d \
   -e QUEUE_URL=https://sqs.eu-central-1.amazonaws.com/${AWS_ACCOUNT_ID}/kth-whisper-jobs \
   -e INPUT_PREFIX=audio/ \
   -e OUTPUT_PREFIX=transcripts/ \
-  -e INFERENCE_URL=http://localhost:3000/transcribe \
+  -e INFERENCE_URLS=http://localhost:3000/transcribe,http://localhost:3001/transcribe,http://localhost:3002/transcribe,http://localhost:3003/transcribe,http://localhost:3004/transcribe \
   ${AWS_ACCOUNT_ID}.dkr.ecr.eu-central-1.amazonaws.com/whisper-worker:latest
 
 echo "=== Whisper worker initialized ==="

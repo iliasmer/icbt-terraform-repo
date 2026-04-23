@@ -10,7 +10,7 @@ QUEUE_URL = os.environ["QUEUE_URL"]
 
 
 def handler(event, context):
-    print("Treatment trigger Lambda triggered")
+    print("PTTSD trigger Lambda triggered")
     print("Full event:")
     print(json.dumps(event))
 
@@ -26,7 +26,7 @@ def handler(event, context):
     message_body = {
         "bucket": bucket,
         "key": key,
-        "stage": "treatment_recommendation"
+        "stage": "pttsd"
     }
 
     print("Sending message to SQS:")

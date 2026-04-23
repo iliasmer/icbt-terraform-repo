@@ -3,15 +3,16 @@ import os
 import time
 import urllib.request
 import urllib.parse
-
 import boto3
+import threading
+
 
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
 QUEUE_URL = os.environ["QUEUE_URL"]
 
 INPUT_PREFIX = os.getenv("INPUT_PREFIX", "summaries/")
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "treatment_recommendations/")
-INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:3000/predict_treatment")
+OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "pttsd_results/")
+INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8000/predict/text")
 
 sqs = boto3.client("sqs", region_name=AWS_REGION)
 s3 = boto3.client("s3", region_name=AWS_REGION)
@@ -20,7 +21,7 @@ s3 = boto3.client("s3", region_name=AWS_REGION)
 def output_key_for(input_key: str) -> str:
     rel = input_key[len(INPUT_PREFIX):] if input_key.startswith(INPUT_PREFIX) else input_key
     base = rel.rsplit(".", 1)[0]
-    return f"{OUTPUT_PREFIX}{base}_treatment.json"
+    return f"{OUTPUT_PREFIX}{base}_pttsd.json"
 
 
 def call_model(payload_dict: dict) -> str:
@@ -38,8 +39,29 @@ def call_model(payload_dict: dict) -> str:
         return body
 
 
+def visibility_heartbeat(receipt: str, stop_evt: threading.Event):
+    # Every 10s, set visibility to 30s from "now"
+    while not stop_evt.wait(10):
+        try:
+            sqs.change_message_visibility(
+                QueueUrl=QUEUE_URL,
+                ReceiptHandle=receipt,
+                VisibilityTimeout=30,
+            )
+        except Exception as e:
+            print(f"VISIBILITY HEARTBEAT ERROR: {e}")
+
+
+def stop_heartbeat(stop_evt: threading.Event, hb: threading.Thread) -> None:
+    stop_evt.set()
+    try:
+        hb.join(timeout=1)
+    except Exception:
+        pass
+
+
 def main():
-    print("treatment-recommendation-worker started")
+    print("pttsd-worker started")
     print(f"QUEUE_URL={QUEUE_URL}")
     print(f"INFERENCE_URL={INFERENCE_URL}")
     print(f"INPUT_PREFIX={INPUT_PREFIX}")
@@ -50,7 +72,7 @@ def main():
             QueueUrl=QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
-            VisibilityTimeout=900,
+            VisibilityTimeout=30,
         )
         msgs = resp.get("Messages", [])
         if not msgs:
@@ -58,6 +80,9 @@ def main():
 
         msg = msgs[0]
         receipt = msg["ReceiptHandle"]
+
+        stop_evt = None
+        hb = None
 
         try:
             body = json.loads(msg["Body"])
@@ -70,27 +95,16 @@ def main():
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt)
                 continue
 
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            summary_text = obj["Body"].read().decode("utf-8", errors="replace")
-            print(f"Downloaded summary chars: {len(summary_text)}")
+            stop_evt = threading.Event()
+            hb = threading.Thread(target=visibility_heartbeat, args=(receipt, stop_evt), daemon=True)
+            hb.start()
 
-            # POC payload, replace later with feature extraction from summary_text
-            payload_dict = {
-                "phq9": 10,
-                "gad7": 2,
-                "keds": 28,
-                "minispin": 8,
-                "padis": 5,
-                "isi": 14,
-                "ptsd": 0,
-                "bgq": 8,
-                "scoff": 0,
-                "iowa": 11,
-                "pss4": 10,
-                "phobia_screener": 2,
-                "health_anxiety_screener": 2,
-                "gaf": 2,
-            }
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            input_text = obj["Body"].read().decode("utf-8", errors="replace")
+            print(f"Downloaded chars: {len(input_text)}")
+
+            utterances = [ln.strip() for ln in input_text.splitlines() if ln.strip()]
+            payload_dict = {"utterances": [utterances]}
 
             response_body = call_model(payload_dict)
 
@@ -103,10 +117,15 @@ def main():
             )
             print(f"wrote: s3://{bucket}/{out_key}")
 
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
+
             sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt)
             print("deleted message")
 
         except Exception as e:
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
             print(f"ERROR: {e}")
             time.sleep(2)
             # do not delete message, SQS will retry and DLQ later

@@ -5,6 +5,7 @@ import urllib.request
 import urllib.parse
 
 import boto3
+import threading
 
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
 QUEUE_URL = os.environ["QUEUE_URL"]
@@ -37,17 +38,60 @@ def call_model(text: str) -> str:
         return body
 
 
+def warmup_model():
+    print("WARMUP: starting model warmup")
+
+    warmup_text = "This is a startup warmup request for the summarization model."
+
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            print(f"WARMUP: attempt {attempt}, calling model at {INFERENCE_URL}")
+            _ = call_model(warmup_text)
+            print("WARMUP: success, result discarded")
+            break
+        except Exception as e:
+            print(f"WARMUP: attempt {attempt} failed: {e}")
+            print("WARMUP: waiting 30 seconds before retry")
+            time.sleep(30)
+
+    print("WARMUP: finished")
+
+
+def visibility_heartbeat(receipt: str, stop_evt: threading.Event):
+    while not stop_evt.wait(10):
+        try:
+            sqs.change_message_visibility(
+                QueueUrl=QUEUE_URL,
+                ReceiptHandle=receipt,
+                VisibilityTimeout=30,
+            )
+        except Exception as e:
+            print(f"VISIBILITY HEARTBEAT ERROR: {e}")
+
+
+def stop_heartbeat(stop_evt: threading.Event, hb: threading.Thread) -> None:
+    stop_evt.set()
+    try:
+        hb.join(timeout=1)
+    except Exception:
+        pass
+
+
 def main():
     print("summarization-worker started")
     print(f"QUEUE_URL={QUEUE_URL}")
     print(f"INFERENCE_URL={INFERENCE_URL}")
+
+    warmup_model()
 
     while True:
         resp = sqs.receive_message(
             QueueUrl=QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
-            VisibilityTimeout=900,
+            VisibilityTimeout=30,
         )
         msgs = resp.get("Messages", [])
         if not msgs:
@@ -56,11 +100,18 @@ def main():
         msg = msgs[0]
         receipt = msg["ReceiptHandle"]
 
+        stop_evt = None
+        hb = None
+
         try:
             body = json.loads(msg["Body"])
             bucket = body["bucket"]
             key = urllib.parse.unquote_plus(body["key"])
             print(f"job: s3://{bucket}/{key}")
+
+            stop_evt = threading.Event()
+            hb = threading.Thread(target=visibility_heartbeat, args=(receipt, stop_evt), daemon=True)
+            hb.start()
 
             obj = s3.get_object(Bucket=bucket, Key=key)
             text = obj["Body"].read().decode("utf-8", errors="replace")
@@ -76,10 +127,15 @@ def main():
             )
             print(f"wrote: s3://{bucket}/{out_key}")
 
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
+
             sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt)
             print("deleted message")
 
         except Exception as e:
+            if stop_evt is not None and hb is not None:
+                stop_heartbeat(stop_evt, hb)
             print(f"ERROR: {e}")
             time.sleep(2)
             # do not delete message, SQS will retry / DLQ later
